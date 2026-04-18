@@ -18,6 +18,7 @@ const { isAtBottom } = require('./lib/followMode');
 const { parseViteHealth, STATES: VITE_STATES } = require('./lib/viteHealth');
 const { cancelChild } = require('./lib/cancel');
 const { formatHelpLines } = require('./lib/help');
+const { readGitState } = require('./lib/git');
 const { loadState, saveState, resolveSelectedIndex, resolveLogTab } = require('./lib/persistence');
 const errorBoundary = require('./lib/errorBoundary');
 
@@ -46,6 +47,7 @@ const state = {
     selected: initialSelected,
     statuses: PROJECTS.map(() => ({ containers: false, vite: false, reverb: false, queue: false })),
     viteHealth: PROJECTS.map(() => null),
+    gitState: PROJECTS.map(() => null),
     refreshing: false,
     actionRunning: null,
     actionChild: null,
@@ -54,6 +56,13 @@ const state = {
     spinFrame: 0,
     firstLoad: true,
 };
+
+function refreshGitState() {
+    PROJECTS.forEach((p, i) => {
+        const dir = path.join(WEBSERVER_DIR, p.name);
+        state.gitState[i] = readGitState(dir);
+    });
+}
 
 function refreshViteHealth() {
     PROJECTS.forEach((p, i) => {
@@ -117,6 +126,7 @@ function refreshAllStatuses() {
         state.refreshing = false;
         state.firstLoad = false;
         refreshViteHealth();
+        refreshGitState();
         renderAll();
         screen.render();
     });
@@ -377,9 +387,15 @@ const detailBox = blessed.box({
 function renderDetail() {
     const p = PROJECTS[state.selected];
     const s = state.statuses[state.selected];
+    const git = state.gitState[state.selected];
 
     const titleLine = fg(p.accent, bold(p.display));
-    const urlLine = fg(C.dim, `https://${p.url}`);
+
+    const gitSuffix = git
+        ? `   ${fg(C.dim, '⎇')} ${fg(git.dirty ? C.yellow : C.mid, git.branch)}` +
+          (git.dirty ? fg(C.yellow, ' ●') : '')
+        : '';
+    const urlLine = fg(C.dim, `https://${p.url}`) + gitSuffix;
 
     const sep = fg(C.border, '─'.repeat(Math.max((detailBox.width || 30) - 4, 10)));
 
