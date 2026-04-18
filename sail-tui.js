@@ -16,6 +16,7 @@ const { validateProjects } = require('./lib/validateProjects');
 const { openUrl } = require('./lib/browser');
 const { isAtBottom } = require('./lib/followMode');
 const { parseViteHealth, STATES: VITE_STATES } = require('./lib/viteHealth');
+const { cancelChild } = require('./lib/cancel');
 const { loadState, saveState, resolveSelectedIndex, resolveLogTab } = require('./lib/persistence');
 const errorBoundary = require('./lib/errorBoundary');
 
@@ -46,6 +47,7 @@ const state = {
     viteHealth: PROJECTS.map(() => null),
     refreshing: false,
     actionRunning: null,
+    actionChild: null,
     logTab: initialLogTab,
     logFollow: true,
     spinFrame: 0,
@@ -143,11 +145,15 @@ function runAction(action, projectName) {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: WEBSERVER_DIR,
     });
+    state.actionChild = child;
 
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
         const prev = state.actionRunning;
         state.actionRunning = null;
-        if (code === 0) {
+        state.actionChild = null;
+        if (signal) {
+            addActivity(`${fg(C.yellow, '⊘')} ${prev} ${fg(C.yellow, `cancelled (${signal})`)}`);
+        } else if (code === 0) {
             addActivity(`${fg(C.green, '✓')} ${prev} ${fg(C.dim, 'done')}`);
         } else {
             addActivity(`${fg(C.red, '✗')} ${prev} ${fg(C.red, 'failed')}`);
@@ -175,11 +181,15 @@ function runArtisan(projectName, commands) {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: dir,
     });
+    state.actionChild = child;
 
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
         const prev = state.actionRunning;
         state.actionRunning = null;
-        if (code === 0) {
+        state.actionChild = null;
+        if (signal) {
+            addActivity(`${fg(C.yellow, '⊘')} ${prev} ${fg(C.yellow, `cancelled (${signal})`)}`);
+        } else if (code === 0) {
             addActivity(`${fg(C.green, '✓')} ${prev} ${fg(C.dim, 'done')}`);
         } else {
             addActivity(`${fg(C.red, '✗')} ${prev} ${fg(C.red, 'failed')}`);
@@ -587,6 +597,7 @@ function renderStatusBar() {
         key('l', 'log'),
         key('G', 'follow'),
         key('a', 'activity'),
+        key('Esc', 'cancel'),
         key('q', 'quit'),
     ].join(fg(C.border, '  '));
 
@@ -742,7 +753,17 @@ screen.key(['G', 'end'], () => {
 // Activity toggle
 screen.key('a', toggleActivity);
 screen.key('escape', () => {
-    if (activityVisible) toggleActivity();
+    if (activityVisible) {
+        toggleActivity();
+        return;
+    }
+    if (state.actionChild) {
+        if (cancelChild(state.actionChild)) {
+            addActivity(`${fg(C.yellow, '⊘')} cancelling ${state.actionRunning}...`);
+            renderAll();
+            screen.render();
+        }
+    }
 });
 
 // Manual refresh
