@@ -83,7 +83,7 @@ function runAction(action, projectName) {
 
     const args = buildSailAllArgs(action, projectName);
 
-    const child = spawn('bash', ['-c', [SAIL_ALL, ...args].join(' ')], {
+    const child = spawn(SAIL_ALL, args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: WEBSERVER_DIR,
     });
