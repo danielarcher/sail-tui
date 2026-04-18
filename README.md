@@ -1,5 +1,9 @@
 # sail-tui
 
+[![Tests](https://github.com/danielarcher/sail-tui/actions/workflows/test.yml/badge.svg)](https://github.com/danielarcher/sail-tui/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](./package.json)
+
 Terminal UI dashboard for managing all Laravel Sail projects under `~/webserver/`.
 
 Wraps the existing `sail-all` script with a real-time interactive interface — status monitoring, log tailing, and per-project or bulk actions, all from one terminal.
