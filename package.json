@@ -7,7 +7,8 @@
     "sail-tui": "./sail-tui.js"
   },
   "scripts": {
-    "start": "node sail-tui.js"
+    "start": "node sail-tui.js",
+    "test": "node --test"
   },
   "keywords": [
     "laravel",

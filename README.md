@@ -145,10 +145,38 @@ No background colors are forced — the TUI inherits your terminal's native back
 │   ├── {project}-queue.log
 │   └── .status-check.sh    # Temp script generated each status refresh cycle
 └── sail-tui/
-    ├── sail-tui.js          # Main TUI application (~680 lines)
+    ├── sail-tui.js          # Main TUI application — wiring and rendering
+    ├── lib/                 # Pure modules (testable without blessed)
+    │   ├── projects.js      # PROJECTS definitions
+    │   ├── theme.js         # Colour palette + blessed tag helpers
+    │   ├── logs.js          # readLogTail, sanitizeLogLine
+    │   ├── status.js        # buildStatusScript, parseStatusOutput
+    │   ├── activity.js      # createActivity ring buffer
+    │   └── actions.js       # buildSailAllArgs, labelForAction
+    ├── test/                # node:test suite (no framework, no deps)
+    │   ├── logs.test.js
+    │   ├── status.test.js
+    │   ├── activity.test.js
+    │   ├── actions.test.js
+    │   ├── theme.test.js
+    │   └── projects.test.js
     ├── package.json
     └── node_modules/        # neo-blessed dependency
 ```
+
+## Testing
+
+Pure logic is split into `lib/` modules so it can be tested without booting
+blessed. The suite uses Node's built-in `node:test` runner — no test
+framework, no dev dependencies.
+
+```bash
+npm test
+```
+
+Pipeline-coupled parts (blessed rendering, `spawn`, timers) are not covered
+by the unit suite; they are best exercised with a PTY-based smoke test
+(future work).
 
 ## Adding a New Project
 

@@ -6,43 +6,22 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+const { PROJECTS } = require('./lib/projects');
+const { C, fg, bold } = require('./lib/theme');
+const { readLogTail } = require('./lib/logs');
+const { buildStatusScript, parseStatusOutput } = require('./lib/status');
+const { createActivity } = require('./lib/activity');
+const { buildSailAllArgs, labelForAction } = require('./lib/actions');
+
 // ── Config ──────────────────────────────────────────────────────────────────
 
 const WEBSERVER_DIR = process.env.SAIL_TUI_DIR || path.resolve(__dirname, '..');
 const LOGS_DIR = path.join(WEBSERVER_DIR, '.sail-logs');
 const SAIL_ALL = path.join(WEBSERVER_DIR, 'sail-all');
 
-const PROJECTS = [
-    { name: 'void-crown-arena',    display: 'Void Crown Arena',    url: 'void-crown-arena.local',  reverb: true,  queue: false, accent: '#a855f7' },
-    { name: 'fastidious.gg',       display: 'Fastidious.gg',       url: 'fastidious.local',        reverb: false, queue: false, accent: '#22d3ee' },
-    { name: 'fastidious.gg-react', display: 'Fastidious React',    url: 'fastidious-react.local',  reverb: false, queue: false, accent: '#f97316' },
-    { name: 'freedubinhorses.ie',  display: 'Free Dublin Horses',  url: 'freedubinhorses.local',   reverb: false, queue: false, accent: '#4ade80' },
-    { name: 'iaang.com',           display: 'IAANG.com',           url: 'iaang.local',             reverb: false, queue: false, accent: '#f43f5e' },
-    { name: 'nextlevel',           display: 'Next Level Raid',     url: 'nextlevel.local',         reverb: true,  queue: false, accent: '#3b82f6' },
-    { name: 'lootkeep',            display: 'LootKeep',            url: 'lootkeep.local',          reverb: false, queue: false, accent: '#eab308' },
-    { name: 'marmitas-irlanda',    display: 'Marmitas Irlanda',    url: 'marmitas.local',          reverb: true,  queue: true,  accent: '#ec4899' },
-];
-
-// ── Color palette ───────────────────────────────────────────────────────────
-
-const C = {
-    dim:     '#888888',
-    mid:     '#aaaaaa',
-    text:    '#dddddd',
-    bright:  '#ffffff',
-    green:   '#4ade80',
-    red:     '#f43f5e',
-    yellow:  '#fbbf24',
-    cyan:    '#22d3ee',
-    magenta: '#c084fc',
-    orange:  '#fb923c',
-    border:  '#888888',
-};
-
-function fg(color, text) { return `{${color}-fg}${text}{/${color}-fg}`; }
-function bold(text) { return `{bold}${text}{/bold}`; }
-
 // ── State ───────────────────────────────────────────────────────────────────
+
+const activity = createActivity();
 
 const state = {
     selected: 0,
@@ -50,7 +29,6 @@ const state = {
     refreshing: false,
     actionRunning: null,
     logTab: 'vite',
-    activity: [],        // recent action messages
     spinFrame: 0,
     firstLoad: true,
 };
@@ -58,9 +36,7 @@ const state = {
 const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 function addActivity(msg) {
-    const time = new Date().toLocaleTimeString('en-IE', { hour12: false });
-    state.activity.unshift({ time, msg });
-    if (state.activity.length > 50) state.activity.pop();
+    activity.add(msg);
 }
 
 // ── Status detection ────────────────────────────────────────────────────────
@@ -72,47 +48,14 @@ function refreshAllStatuses() {
     // Write check script to a temp file so the bash -c command doesn't
     // contain all project paths (which causes pgrep false positives)
     const scriptPath = path.join(LOGS_DIR, '.status-check.sh');
-    const scriptLines = ['#!/bin/bash'];
-
-    PROJECTS.forEach((p, i) => {
-        const dir = path.join(WEBSERVER_DIR, p.name);
-        const container = `${p.name}-laravel.test-1`;
-
-        // Container check via sail ps
-        scriptLines.push(`echo "CHECK:${i}:$(cd "${dir}" && ./vendor/bin/sail ps -q 2>/dev/null | wc -l)"`);
-
-        // Process checks: look inside the Docker container where they actually run
-        scriptLines.push(`echo "CHECK:${i}:$(docker exec ${container} pgrep -c -f 'node.*vite' 2>/dev/null || echo 0)"`);
-
-        if (p.reverb) {
-            scriptLines.push(`echo "CHECK:${i}:$(docker exec ${container} pgrep -c -f 'reverb:start' 2>/dev/null || echo 0)"`);
-        }
-        if (p.queue) {
-            scriptLines.push(`echo "CHECK:${i}:$(docker exec ${container} pgrep -c -f 'queue:work' 2>/dev/null || echo 0)"`);
-        }
-    });
-
     try { fs.mkdirSync(LOGS_DIR, { recursive: true }); } catch {}
-    fs.writeFileSync(scriptPath, scriptLines.join('\n') + '\n');
+    fs.writeFileSync(scriptPath, buildStatusScript(PROJECTS, WEBSERVER_DIR));
 
     const child = spawn('bash', [scriptPath], { stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', d => output += d.toString());
     child.on('close', () => {
-        const lines = output.split('\n').filter(l => l.startsWith('CHECK:'));
-        const checkIndex = PROJECTS.map(() => 0);
-
-        for (const line of lines) {
-            const parts = line.split(':');
-            const idx = parseInt(parts[1], 10);
-            const val = parseInt(parts[2], 10) > 0;
-            const ci = checkIndex[idx]++;
-            if (ci === 0) state.statuses[idx].containers = val;
-            else if (ci === 1) state.statuses[idx].vite = val;
-            else if (ci === 2) state.statuses[idx].reverb = val;
-            else if (ci === 3) state.statuses[idx].queue = val;
-        }
-
+        state.statuses = parseStatusOutput(output, PROJECTS);
         state.refreshing = false;
         state.firstLoad = false;
         renderAll();
@@ -132,16 +75,15 @@ function refreshAllStatuses() {
 function runAction(action, projectName) {
     if (state.actionRunning) return;
     const label = projectName || 'all';
-    const actionLabel = action === 'down' ? 'stop' : action;
+    const actionLabel = labelForAction(action);
     state.actionRunning = `${actionLabel} ${label}`;
     addActivity(`${fg(C.yellow, SPIN[0])} ${actionLabel} ${bold(label)}...`);
     renderAll();
     screen.render();
 
-    const args = [SAIL_ALL, action];
-    if (projectName) args.push(projectName);
+    const args = buildSailAllArgs(action, projectName);
 
-    const child = spawn('bash', ['-c', args.join(' ')], {
+    const child = spawn('bash', ['-c', [SAIL_ALL, ...args].join(' ')], {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: WEBSERVER_DIR,
     });
@@ -194,24 +136,12 @@ function runArtisan(projectName, commands) {
 // ── Log tailing ─────────────────────────────────────────────────────────────
 
 function tailLog(projectName, service, maxLines) {
-    const logPath = path.join(LOGS_DIR, `${projectName}-${service}.log`);
-    try {
-        if (!fs.existsSync(logPath)) return [fg(C.dim, `  No ${service} log file`)];
-        const stat = fs.statSync(logPath);
-        if (stat.size === 0) return [fg(C.dim, `  ${service} log is empty`)];
-
-        const bufSize = Math.min(stat.size, 16384);
-        const buf = Buffer.alloc(bufSize);
-        const fd = fs.openSync(logPath, 'r');
-        fs.readSync(fd, buf, 0, bufSize, stat.size - bufSize);
-        fs.closeSync(fd);
-
-        const lines = buf.toString('utf8').split('\n').filter(Boolean);
-        return lines.slice(-maxLines).map(l =>
-            '  ' + l.replace(/\{/g, '\\{').replace(/\x1b\[[0-9;]*m/g, '')
-        );
-    } catch {
-        return [fg(C.dim, `  Error reading ${service} log`)];
+    const result = readLogTail(LOGS_DIR, projectName, service, maxLines);
+    switch (result.kind) {
+        case 'missing': return [fg(C.dim, `  No ${service} log file`)];
+        case 'empty':   return [fg(C.dim, `  ${service} log is empty`)];
+        case 'error':   return [fg(C.dim, `  Error reading ${service} log`)];
+        case 'ok':      return result.lines.map(l => '  ' + l);
     }
 }
 
@@ -580,8 +510,9 @@ function renderStatusBar() {
     const dot = state.refreshing ? fg(C.yellow, SPIN[state.spinFrame]) : fg(C.green, '●');
     const timeStr = fg(C.dim, now);
 
-    const recentAction = state.activity.length > 0
-        ? `  ${fg(C.dim, '│')}  ${state.activity[0].msg}`
+    const recent = activity.list();
+    const recentAction = recent.length > 0
+        ? `  ${fg(C.dim, '│')}  ${recent[0].msg}`
         : '';
 
     statusBar.setContent(`${keys}\n ${dot} ${upLabel} up  ${fg(C.dim, '│')}  ${timeStr}${recentAction}`);
@@ -611,13 +542,12 @@ const activityBox = blessed.box({
 
 function renderActivity() {
     if (!activityVisible) return;
-    if (state.activity.length === 0) {
+    const entries = activity.list();
+    if (entries.length === 0) {
         activityBox.setContent(fg(C.dim, '  No recent activity'));
         return;
     }
-    const lines = state.activity.map(a =>
-        `${fg(C.dim, a.time)}  ${a.msg}`
-    );
+    const lines = entries.map(a => `${fg(C.dim, a.time)}  ${a.msg}`);
     activityBox.setContent(lines.join('\n'));
 }
 
