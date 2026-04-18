@@ -1,0 +1,30 @@
+{
+  "name": "sail-tui",
+  "version": "1.0.0",
+  "description": "Terminal UI dashboard for managing multiple Laravel Sail projects — status monitoring, log tailing, and per-project or bulk actions.",
+  "main": "sail-tui.js",
+  "bin": {
+    "sail-tui": "./sail-tui.js"
+  },
+  "scripts": {
+    "start": "node sail-tui.js"
+  },
+  "keywords": [
+    "laravel",
+    "sail",
+    "tui",
+    "dashboard",
+    "docker",
+    "vite",
+    "reverb"
+  ],
+  "author": "Daniel Cramer <contato@danielcramer.com.br>",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "neo-blessed": "^0.2.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
