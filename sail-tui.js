@@ -13,6 +13,7 @@ const { buildStatusScript, parseStatusOutput } = require('./lib/status');
 const { createActivity } = require('./lib/activity');
 const { buildSailAllArgs, labelForAction } = require('./lib/actions');
 const { validateProjects } = require('./lib/validateProjects');
+const { openUrl } = require('./lib/browser');
 const errorBoundary = require('./lib/errorBoundary');
 
 try {
@@ -510,6 +511,7 @@ function renderStatusBar() {
         key('r', 'restart'),
         key('h', 'heal'),
         key('c', 'clear'),
+        key('o', 'open'),
         key('SHIFT', 'all'),
         key('l', 'log'),
         key('a', 'activity'),
@@ -615,6 +617,20 @@ screen.key('s', () => { if (!activityVisible) runAction('down', PROJECTS[state.s
 screen.key('r', () => { if (!activityVisible) runAction('restart', PROJECTS[state.selected].name); });
 screen.key('h', () => { if (!activityVisible) runAction('heal', PROJECTS[state.selected].name); });
 screen.key('c', () => { if (!activityVisible) runArtisan(PROJECTS[state.selected].name, ['cache:clear', 'view:clear']); });
+
+screen.key('o', () => {
+    if (activityVisible) return;
+    const p = PROJECTS[state.selected];
+    const url = `https://${p.url}`;
+    try {
+        openUrl(url);
+        addActivity(`${fg(C.cyan, '↗')} open ${bold(p.display)} ${fg(C.dim, url)}`);
+    } catch (err) {
+        addActivity(`${fg(C.red, '✗')} open ${p.display} ${fg(C.red, err.message || 'failed')}`);
+    }
+    renderAll();
+    screen.render();
+});
 
 // All project actions (shift)
 screen.key('S-u', () => { if (!activityVisible) runAction('up'); });
