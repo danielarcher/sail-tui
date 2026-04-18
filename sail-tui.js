@@ -614,6 +614,7 @@ function renderStatusBar() {
         key('l', 'log'),
         key('G', 'follow'),
         key('a', 'activity'),
+        key('g', 'git'),
         key('Esc', 'cancel'),
         key('?', 'help'),
         key('q', 'quit'),
