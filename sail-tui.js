@@ -12,7 +12,15 @@ const { readLogTail } = require('./lib/logs');
 const { buildStatusScript, parseStatusOutput } = require('./lib/status');
 const { createActivity } = require('./lib/activity');
 const { buildSailAllArgs, labelForAction } = require('./lib/actions');
+const { validateProjects } = require('./lib/validateProjects');
 const errorBoundary = require('./lib/errorBoundary');
+
+try {
+    validateProjects(PROJECTS);
+} catch (err) {
+    process.stderr.write(`sail-tui: invalid PROJECTS configuration — ${err.message}\n`);
+    process.exit(2);
+}
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
