@@ -17,6 +17,7 @@ const { openUrl } = require('./lib/browser');
 const { isAtBottom } = require('./lib/followMode');
 const { parseViteHealth, STATES: VITE_STATES } = require('./lib/viteHealth');
 const { cancelChild } = require('./lib/cancel');
+const { formatHelpLines } = require('./lib/help');
 const { loadState, saveState, resolveSelectedIndex, resolveLogTab } = require('./lib/persistence');
 const errorBoundary = require('./lib/errorBoundary');
 
@@ -598,6 +599,7 @@ function renderStatusBar() {
         key('G', 'follow'),
         key('a', 'activity'),
         key('Esc', 'cancel'),
+        key('?', 'help'),
         key('q', 'quit'),
     ].join(fg(C.border, '  '));
 
@@ -662,6 +664,63 @@ function toggleActivity() {
     screen.render();
 }
 
+function overlayVisible() {
+    return activityVisible || helpVisible;
+}
+
+// ── Help overlay ───────────────────────────────────────────────────────────
+
+let helpVisible = false;
+
+const helpBox = blessed.box({
+    parent: screen,
+    top: 'center',
+    left: 'center',
+    width: '70%',
+    height: '70%',
+    tags: true,
+    border: { type: 'line' },
+    style: { border: { fg: C.mid } },
+    label: ` ${fg(C.mid, bold('KEYBINDINGS'))} `,
+    padding: { left: 2, right: 2, top: 1, bottom: 1 },
+    scrollable: true,
+    alwaysScroll: true,
+    mouse: true,
+    scrollbar: { ch: '█', style: { fg: C.dim } },
+    hidden: true,
+});
+
+function renderHelp() {
+    if (!helpVisible) return;
+    const keyLine = (l) => {
+        // Highlight the key column with bright text and dim the gap, so
+        // the overlay reads like a two-column cheat sheet.
+        const m = l.match(/^(\s+)(\S(?:.*?\S)?)(\s{2,})(.*)$/);
+        if (!m) return l;
+        return `${m[1]}${fg(C.bright, m[2])}${fg(C.dim, m[3])}${fg(C.text, m[4])}`;
+    };
+    const content = [
+        fg(C.mid, 'Keyboard shortcuts for sail-tui'),
+        '',
+        ...formatHelpLines().map(keyLine),
+        '',
+        fg(C.dim, 'Press ? or Esc to close.'),
+    ];
+    helpBox.setContent(content.join('\n'));
+}
+
+function toggleHelp() {
+    helpVisible = !helpVisible;
+    if (helpVisible) {
+        renderHelp();
+        helpBox.show();
+        helpBox.focus();
+    } else {
+        helpBox.hide();
+    }
+    screen.render();
+}
+
 // ── Render all ──────────────────────────────────────────────────────────────
 
 function renderAll() {
@@ -678,7 +737,7 @@ function renderAll() {
 screen.key(['q', 'C-c'], () => process.exit(0));
 
 screen.key(['j', 'down'], () => {
-    if (activityVisible) return;
+    if (overlayVisible()) return;
     state.selected = Math.min(state.selected + 1, PROJECTS.length - 1);
     state.logTab = 'vite'; // reset log tab on project change
     state.logFollow = true;
@@ -688,7 +747,7 @@ screen.key(['j', 'down'], () => {
 });
 
 screen.key(['k', 'up'], () => {
-    if (activityVisible) return;
+    if (overlayVisible()) return;
     state.selected = Math.max(state.selected - 1, 0);
     state.logTab = 'vite';
     state.logFollow = true;
@@ -698,15 +757,15 @@ screen.key(['k', 'up'], () => {
 });
 
 // Single project actions
-screen.key('u', () => { if (!activityVisible) runAction('up', PROJECTS[state.selected].name); });
-screen.key('d', () => { if (!activityVisible) runAction('dev', PROJECTS[state.selected].name); });
-screen.key('s', () => { if (!activityVisible) runAction('down', PROJECTS[state.selected].name); });
-screen.key('r', () => { if (!activityVisible) runAction('restart', PROJECTS[state.selected].name); });
-screen.key('h', () => { if (!activityVisible) runAction('heal', PROJECTS[state.selected].name); });
-screen.key('c', () => { if (!activityVisible) runArtisan(PROJECTS[state.selected].name, ['cache:clear', 'view:clear']); });
+screen.key('u', () => { if (!overlayVisible()) runAction('up', PROJECTS[state.selected].name); });
+screen.key('d', () => { if (!overlayVisible()) runAction('dev', PROJECTS[state.selected].name); });
+screen.key('s', () => { if (!overlayVisible()) runAction('down', PROJECTS[state.selected].name); });
+screen.key('r', () => { if (!overlayVisible()) runAction('restart', PROJECTS[state.selected].name); });
+screen.key('h', () => { if (!overlayVisible()) runAction('heal', PROJECTS[state.selected].name); });
+screen.key('c', () => { if (!overlayVisible()) runArtisan(PROJECTS[state.selected].name, ['cache:clear', 'view:clear']); });
 
 screen.key('o', () => {
-    if (activityVisible) return;
+    if (overlayVisible()) return;
     const p = PROJECTS[state.selected];
     const url = `https://${p.url}`;
     try {
@@ -720,15 +779,15 @@ screen.key('o', () => {
 });
 
 // All project actions (shift)
-screen.key('S-u', () => { if (!activityVisible) runAction('up'); });
-screen.key('S-d', () => { if (!activityVisible) runAction('dev'); });
-screen.key('S-s', () => { if (!activityVisible) runAction('down'); });
-screen.key('S-r', () => { if (!activityVisible) runAction('restart'); });
-screen.key('S-h', () => { if (!activityVisible) runAction('heal'); });
+screen.key('S-u', () => { if (!overlayVisible()) runAction('up'); });
+screen.key('S-d', () => { if (!overlayVisible()) runAction('dev'); });
+screen.key('S-s', () => { if (!overlayVisible()) runAction('down'); });
+screen.key('S-r', () => { if (!overlayVisible()) runAction('restart'); });
+screen.key('S-h', () => { if (!overlayVisible()) runAction('heal'); });
 
 // Log tab cycling
 screen.key('l', () => {
-    if (activityVisible) return;
+    if (overlayVisible()) return;
     const p = PROJECTS[state.selected];
     const tabs = ['vite'];
     if (p.reverb) tabs.push('reverb');
@@ -743,7 +802,7 @@ screen.key('l', () => {
 
 // Jump to bottom of log + resume follow mode
 screen.key(['G', 'end'], () => {
-    if (activityVisible) return;
+    if (overlayVisible()) return;
     state.logFollow = true;
     logBox.setScrollPerc(100);
     renderLogView();
@@ -752,11 +811,10 @@ screen.key(['G', 'end'], () => {
 
 // Activity toggle
 screen.key('a', toggleActivity);
+screen.key('?', toggleHelp);
 screen.key('escape', () => {
-    if (activityVisible) {
-        toggleActivity();
-        return;
-    }
+    if (activityVisible) { toggleActivity(); return; }
+    if (helpVisible)     { toggleHelp();     return; }
     if (state.actionChild) {
         if (cancelChild(state.actionChild)) {
             addActivity(`${fg(C.yellow, '⊘')} cancelling ${state.actionRunning}...`);
