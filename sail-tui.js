@@ -15,6 +15,7 @@ const { buildSailAllArgs, labelForAction } = require('./lib/actions');
 const { validateProjects } = require('./lib/validateProjects');
 const { openUrl } = require('./lib/browser');
 const { isAtBottom } = require('./lib/followMode');
+const { parseViteHealth, STATES: VITE_STATES } = require('./lib/viteHealth');
 const { loadState, saveState, resolveSelectedIndex, resolveLogTab } = require('./lib/persistence');
 const errorBoundary = require('./lib/errorBoundary');
 
@@ -42,6 +43,7 @@ const initialLogTab = resolveLogTab(PROJECTS[initialSelected], persisted.logTab)
 const state = {
     selected: initialSelected,
     statuses: PROJECTS.map(() => ({ containers: false, vite: false, reverb: false, queue: false })),
+    viteHealth: PROJECTS.map(() => null),
     refreshing: false,
     actionRunning: null,
     logTab: initialLogTab,
@@ -49,6 +51,35 @@ const state = {
     spinFrame: 0,
     firstLoad: true,
 };
+
+function refreshViteHealth() {
+    PROJECTS.forEach((p, i) => {
+        if (!state.statuses[i].vite) {
+            state.viteHealth[i] = null;
+            return;
+        }
+        const result = readLogTail(LOGS_DIR, p.name, 'vite', 100);
+        state.viteHealth[i] = result.kind === 'ok' ? parseViteHealth(result.lines) : null;
+    });
+}
+
+function viteHealthColor(health) {
+    switch (health) {
+        case VITE_STATES.READY:     return C.green;
+        case VITE_STATES.COMPILING: return C.yellow;
+        case VITE_STATES.ERROR:     return C.red;
+        default:                    return C.yellow;
+    }
+}
+
+function viteHealthLabel(health) {
+    switch (health) {
+        case VITE_STATES.READY:     return 'Ready';
+        case VITE_STATES.COMPILING: return 'Compiling';
+        case VITE_STATES.ERROR:     return 'Error';
+        default:                    return 'Running';
+    }
+}
 
 function persistSession() {
     saveState({
@@ -82,6 +113,7 @@ function refreshAllStatuses() {
         state.statuses = parseStatusOutput(output, PROJECTS);
         state.refreshing = false;
         state.firstLoad = false;
+        refreshViteHealth();
         renderAll();
         screen.render();
     });
@@ -290,7 +322,7 @@ function renderProjectList() {
 
         // Service badges (only when running)
         const badges = [];
-        if (s.vite)   badges.push(fg(C.yellow, 'vite'));
+        if (s.vite)   badges.push(fg(viteHealthColor(state.viteHealth[i]), 'vite'));
         if (s.reverb) badges.push(fg(C.cyan, 'reverb'));
         if (s.queue)  badges.push(fg(C.magenta, 'queue'));
         const badgeStr = badges.length ? ' ' + badges.join(fg(C.dim, '·')) : '';
@@ -341,15 +373,18 @@ function renderDetail() {
     const sep = fg(C.border, '─'.repeat(Math.max((detailBox.width || 30) - 4, 10)));
 
     // Service status rows
-    const svcLabel = (label, running, color) => {
+    const svcLabel = (label, running, color, runningText = 'Running') => {
         const dot = running ? fg(color, '●') : fg(C.dim, '○');
-        const text = running ? fg(color, 'Running') : fg(C.dim, 'Stopped');
+        const text = running ? fg(color, runningText) : fg(C.dim, 'Stopped');
         return `  ${dot} ${fg(C.mid, label.padEnd(12))} ${text}`;
     };
 
+    const viteColor = s.vite ? viteHealthColor(state.viteHealth[state.selected]) : C.yellow;
+    const viteText  = s.vite ? viteHealthLabel(state.viteHealth[state.selected]) : 'Running';
+
     const services = [
         svcLabel('Containers', s.containers, C.green),
-        svcLabel('Vite',       s.vite,       C.yellow),
+        svcLabel('Vite',       s.vite,       viteColor, viteText),
     ];
     if (p.reverb) services.push(svcLabel('Reverb', s.reverb, C.cyan));
     if (p.queue)  services.push(svcLabel('Queue',  s.queue,  C.magenta));
@@ -736,7 +771,10 @@ setInterval(() => refreshAllStatuses(), 5000);
 
 // Auto-refresh logs every 2s
 setInterval(() => {
+    refreshViteHealth();
     renderLogView();
+    renderProjectList();
+    renderDetail();
     renderStatusBar();
     screen.render();
 }, 2000);
