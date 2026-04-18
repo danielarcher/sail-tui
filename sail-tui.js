@@ -8,7 +8,7 @@ const path = require('path');
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-const WEBSERVER_DIR = '/home/archer/webserver';
+const WEBSERVER_DIR = process.env.SAIL_TUI_DIR || path.resolve(__dirname, '..');
 const LOGS_DIR = path.join(WEBSERVER_DIR, '.sail-logs');
 const SAIL_ALL = path.join(WEBSERVER_DIR, 'sail-all');
 
