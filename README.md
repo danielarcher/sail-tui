@@ -29,9 +29,10 @@ Requires Node.js (v18+). Dependencies are installed locally in `sail-tui/node_mo
 │   ● LootKeep            UP vite  │  ● Vite         Running          │
 │   ● Marmitas Irlanda    UP ...   │  ○ Reverb       Stopped          │
 │                                  │                                   │
+│                                  │  ● Tests        ✓ 248 · 1.4s     │
 │                                  │  [ Up ] [ Dev ] [ Stop ] [Restart]│
 ├──────────────────────────────────┤                                   │
-│  GIT                             │  VITE │ REVERB │ QUEUE            │
+│  GIT                             │  VITE │ REVERB │ QUEUE │ TESTS    │
 │  ⎇ main ●                        │  ┌─ LOGS ───────────────────┐    │
 │  ⇡ origin/main ↑2                │  │ > dev                     │    │
 │  3✎  1?  1⚑                       │  │ > vite                    │    │
@@ -54,12 +55,13 @@ Requires Node.js (v18+). Dependencies are installed locally in `sail-tui/node_mo
 | `d`         | Dev mode — containers + Vite + Reverb + Queue |
 | `s`         | Stop selected project               |
 | `r`         | Restart selected project            |
+| `t`         | Run the project's test suite (streams into the TESTS tab) |
 | `U` (Shift) | Start all projects                  |
 | `D` (Shift) | Dev all projects                    |
 | `S` (Shift) | Stop all projects                   |
 | `R` (Shift) | Restart all projects                |
 | `o`         | Open selected project URL in the default browser |
-| `l`         | Cycle log tabs (Vite → Reverb → Queue) |
+| `l`         | Cycle log tabs (Vite → Reverb → Queue → Tests) |
 | `G` / `End` | Jump to the end of the log and resume follow mode |
 | `?`         | Toggle the help / keybindings overlay |
 | `a`         | Toggle activity log overlay         |

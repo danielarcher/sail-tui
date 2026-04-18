@@ -20,6 +20,8 @@ const { cancelChild } = require('./lib/cancel');
 const { formatHelpLines } = require('./lib/help');
 const { readGitDetails } = require('./lib/git');
 const { loadState, saveState, resolveSelectedIndex, resolveLogTab } = require('./lib/persistence');
+const { parseTestOutput } = require('./lib/tests');
+const { loadTestCache, saveTestCache, getResult, setResult } = require('./lib/testCache');
 const errorBoundary = require('./lib/errorBoundary');
 
 try {
@@ -39,6 +41,8 @@ const SAIL_ALL = path.join(WEBSERVER_DIR, 'sail-all');
 
 const activity = createActivity();
 
+let testCache = loadTestCache();
+
 const persisted = loadState();
 const initialSelected = resolveSelectedIndex(PROJECTS, persisted.selectedProject);
 const initialLogTab = resolveLogTab(PROJECTS[initialSelected], persisted.logTab);
@@ -49,6 +53,7 @@ const state = {
     viteHealth: PROJECTS.map(() => null),
     gitDetails: null,
     gitSelectedIdx: -1,
+    testRunning: null,       // project name while tests are in flight
     refreshing: false,
     actionRunning: null,
     actionChild: null,
@@ -206,6 +211,85 @@ function runArtisan(projectName, commands) {
         } else {
             addActivity(`${fg(C.red, '✗')} ${prev} ${fg(C.red, 'failed')}`);
         }
+        renderAll();
+        screen.render();
+    });
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+function runTests(projectName) {
+    // Serialize against other actions, and refuse to double-run on the same
+    // project. Use the same lockout path so Esc can cancel the child.
+    if (state.actionRunning || state.testRunning) return;
+
+    const projectDir = path.join(WEBSERVER_DIR, projectName);
+    const logFile = path.join(LOGS_DIR, `${projectName}-tests.log`);
+
+    // Truncate the log so the TESTS tab shows only the fresh run.
+    try {
+        fs.mkdirSync(LOGS_DIR, { recursive: true });
+        fs.writeFileSync(logFile, '');
+    } catch {
+        // Fall through — spawn will still attempt to write and we'll surface
+        // any failure through the test runner exit code.
+    }
+
+    state.testRunning = projectName;
+    state.actionRunning = `test ${projectName}`;
+    addActivity(`${fg(C.yellow, SPIN[0])} test ${bold(projectName)}...`);
+    // Jump to the tests tab so the user can see the run as it streams.
+    state.logTab = 'tests';
+    state.logFollow = true;
+    renderAll();
+    screen.render();
+
+    // set -o pipefail propagates the test runner's exit code past `tee`.
+    const cmd = `set -o pipefail; ./vendor/bin/sail test 2>&1 | tee -a ${JSON.stringify(logFile)}`;
+    const child = spawn('bash', ['-c', cmd], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: projectDir,
+    });
+    state.actionChild = child;
+
+    let captured = '';
+    child.stdout.on('data', d => { captured += d.toString('utf8'); });
+    child.stderr.on('data', d => { captured += d.toString('utf8'); });
+
+    child.on('close', (code, signal) => {
+        const prev = state.actionRunning;
+        state.actionRunning = null;
+        state.actionChild = null;
+        state.testRunning = null;
+
+        // Prefer the file contents — tee wrote them and they're what the
+        // log tab will show anyway.
+        let text = captured;
+        try { text = fs.readFileSync(logFile, 'utf8') || captured; } catch { /* keep captured */ }
+
+        const parsed = parseTestOutput(text, { exitCode: code });
+        const result = {
+            status: parsed.status,
+            passed: parsed.passed,
+            failed: parsed.failed,
+            skipped: parsed.skipped,
+            pending: parsed.pending,
+            duration: parsed.duration,
+            summary: parsed.summary,
+        };
+        testCache = setResult(testCache, projectName, result);
+        saveTestCache(testCache);
+
+        if (signal) {
+            addActivity(`${fg(C.yellow, '⊘')} ${prev} ${fg(C.yellow, `cancelled (${signal})`)}`);
+        } else if (parsed.status === 'pass') {
+            addActivity(`${fg(C.green, '✓')} ${prev} ${fg(C.dim, parsed.summary)}`);
+        } else if (parsed.status === 'fail') {
+            addActivity(`${fg(C.red, '✗')} ${prev} ${fg(C.red, parsed.summary)}`);
+        } else {
+            addActivity(`${fg(C.red, '✗')} ${prev} ${fg(C.red, 'runner error')}`);
+        }
+
         renderAll();
         screen.render();
     });
@@ -424,6 +508,7 @@ function renderDetail() {
     ];
     if (p.reverb) services.push(svcLabel('Reverb', s.reverb, C.cyan));
     if (p.queue)  services.push(svcLabel('Queue',  s.queue,  C.magenta));
+    services.push(renderTestsRow(p.name));
 
     const lines = [
         ` ${titleLine}`,
@@ -434,6 +519,48 @@ function renderDetail() {
 
     detailBox.setContent(lines.join('\n'));
     detailBox.setLabel(` ${fg(C.mid, bold(p.display.toUpperCase()))} `);
+}
+
+function relativeTime(iso) {
+    const then = Date.parse(iso);
+    if (!Number.isFinite(then)) return '';
+    const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
+    if (secs < 60)     return `${secs}s ago`;
+    if (secs < 3600)   return `${Math.floor(secs / 60)}m ago`;
+    if (secs < 86400)  return `${Math.floor(secs / 3600)}h ago`;
+    return `${Math.floor(secs / 86400)}d ago`;
+}
+
+function renderTestsRow(projectName) {
+    const pad = (s) => fg(C.mid, s.padEnd(12));
+    const running = state.testRunning === projectName;
+
+    if (running) {
+        const spin = fg(C.yellow, SPIN[state.spinFrame]);
+        return `  ${spin} ${pad('Tests')} ${fg(C.yellow, 'running...')}`;
+    }
+
+    const result = getResult(testCache, projectName);
+    if (!result) {
+        return `  ${fg(C.dim, '○')} ${pad('Tests')} ${fg(C.dim, 'never run (press t)')}`;
+    }
+
+    const ago = relativeTime(result.ranAt);
+    const dur = typeof result.duration === 'number' ? `${result.duration.toFixed(2)}s` : '?';
+    const when = ago ? fg(C.dim, ` · ${ago}`) : '';
+
+    if (result.status === 'pass') {
+        const skip = result.skipped > 0 ? fg(C.dim, `, ${result.skipped} skipped`) : '';
+        return `  ${fg(C.green, '●')} ${pad('Tests')} ${fg(C.green, `✓ ${result.passed} passed`)}${skip} ${fg(C.dim, `· ${dur}`)}${when}`;
+    }
+    if (result.status === 'fail') {
+        const total = (result.passed || 0) + (result.failed || 0) + (result.skipped || 0);
+        return `  ${fg(C.red, '●')} ${pad('Tests')} ${fg(C.red, `✗ ${result.failed} failed`)}${fg(C.dim, ` of ${total} · ${dur}`)}${when}`;
+    }
+    if (result.status === 'error') {
+        return `  ${fg(C.red, '●')} ${pad('Tests')} ${fg(C.red, 'runner error')}${when}`;
+    }
+    return `  ${fg(C.dim, '○')} ${pad('Tests')} ${fg(C.dim, 'no summary')}${when}`;
 }
 
 // ── Action buttons ──────────────────────────────────────────────────────────
@@ -494,7 +621,7 @@ makeBtn(btnRow2, 'flush all',   30, btnDim, C.orange, () => runArtisan(PROJECTS[
 
 // ── Log tabs (clickable) ────────────────────────────────────────────────────
 
-const TAB_DEFS = ['vite', 'reverb', 'queue'];
+const TAB_DEFS = ['vite', 'reverb', 'queue', 'tests'];
 const tabButtons = {};
 let tabOffset = 1;
 
@@ -527,7 +654,11 @@ function renderLogTabs() {
 
     TAB_DEFS.forEach(t => {
         const btn = tabButtons[t];
-        const visible = t === 'vite' || (t === 'reverb' && p.reverb) || (t === 'queue' && p.queue);
+        const visible =
+            t === 'vite' ||
+            (t === 'reverb' && p.reverb) ||
+            (t === 'queue'  && p.queue)  ||
+            t === 'tests';
         if (!visible) {
             btn.hide();
             return;
@@ -618,6 +749,7 @@ function renderStatusBar() {
         key('r', 'restart'),
         key('h', 'heal'),
         key('c', 'clear'),
+        key('t', 'test'),
         key('o', 'open'),
         key('SHIFT', 'all'),
         key('l', 'log'),
@@ -870,6 +1002,7 @@ screen.key('s', () => { if (!overlayVisible()) runAction('down', PROJECTS[state.
 screen.key('r', () => { if (!overlayVisible()) runAction('restart', PROJECTS[state.selected].name); });
 screen.key('h', () => { if (!overlayVisible()) runAction('heal', PROJECTS[state.selected].name); });
 screen.key('c', () => { if (!overlayVisible()) runArtisan(PROJECTS[state.selected].name, ['cache:clear', 'view:clear']); });
+screen.key('t', () => { if (!overlayVisible()) runTests(PROJECTS[state.selected].name); });
 
 screen.key('o', () => {
     if (overlayVisible()) return;
