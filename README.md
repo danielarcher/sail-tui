@@ -30,13 +30,15 @@ Requires Node.js (v18+). Dependencies are installed locally in `sail-tui/node_mo
 │   ● Marmitas Irlanda    UP ...   │  ○ Reverb       Stopped          │
 │                                  │                                   │
 │                                  │  [ Up ] [ Dev ] [ Stop ] [Restart]│
-│                                  │                                   │
-│                                  │  VITE │ REVERB │ QUEUE            │
-│                                  │  ┌─ LOGS ───────────────────┐    │
-│                                  │  │ > dev                     │    │
-│                                  │  │ > vite                    │    │
-│                                  │  │ VITE v8.0.8 ready in 651 │    │
-│                                  │  └───────────────────────────┘    │
+├──────────────────────────────────┤                                   │
+│  GIT                             │  VITE │ REVERB │ QUEUE            │
+│  ⎇ main ●                        │  ┌─ LOGS ───────────────────┐    │
+│  ⇡ origin/main ↑2                │  │ > dev                     │    │
+│  3✎  1?  1⚑                       │  │ > vite                    │    │
+│  ─────────                        │  │ VITE v8.0.8 ready in 651 │    │
+│  RECENT                           │  └───────────────────────────┘    │
+│  abc1234 fix bug   2h  Alice      │                                   │
+│  def5678 add feat  1d  Bob        │                                   │
 ├─────────────────────────────────────────────────────────────────────┤
 │  j/k nav  u up  d dev  s stop  r restart  SHIFT all  l log  q quit  │
 │  ● 3/8 up  │  14:59:11  │  ✓ dev marmitas-irlanda done              │
@@ -61,7 +63,6 @@ Requires Node.js (v18+). Dependencies are installed locally in `sail-tui/node_mo
 | `G` / `End` | Jump to the end of the log and resume follow mode |
 | `?`         | Toggle the help / keybindings overlay |
 | `a`         | Toggle activity log overlay         |
-| `g`         | Toggle git overlay (branch, upstream, status, recent commits) |
 | `Escape`    | Close the activity overlay, or cancel the in-flight action |
 | `f`         | Force status refresh                |
 | `q` / `Ctrl+C` | Quit                            |

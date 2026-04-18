@@ -18,7 +18,7 @@ const { isAtBottom } = require('./lib/followMode');
 const { parseViteHealth, STATES: VITE_STATES } = require('./lib/viteHealth');
 const { cancelChild } = require('./lib/cancel');
 const { formatHelpLines } = require('./lib/help');
-const { readGitState, readGitDetails } = require('./lib/git');
+const { readGitDetails } = require('./lib/git');
 const { loadState, saveState, resolveSelectedIndex, resolveLogTab } = require('./lib/persistence');
 const errorBoundary = require('./lib/errorBoundary');
 
@@ -47,7 +47,8 @@ const state = {
     selected: initialSelected,
     statuses: PROJECTS.map(() => ({ containers: false, vite: false, reverb: false, queue: false })),
     viteHealth: PROJECTS.map(() => null),
-    gitState: PROJECTS.map(() => null),
+    gitDetails: null,
+    gitSelectedIdx: -1,
     refreshing: false,
     actionRunning: null,
     actionChild: null,
@@ -57,11 +58,11 @@ const state = {
     firstLoad: true,
 };
 
-function refreshGitState() {
-    PROJECTS.forEach((p, i) => {
-        const dir = path.join(WEBSERVER_DIR, p.name);
-        state.gitState[i] = readGitState(dir);
-    });
+function refreshSelectedGitDetails() {
+    const p = PROJECTS[state.selected];
+    const dir = path.join(WEBSERVER_DIR, p.name);
+    state.gitDetails = readGitDetails(dir);
+    state.gitSelectedIdx = state.selected;
 }
 
 function refreshViteHealth() {
@@ -126,7 +127,7 @@ function refreshAllStatuses() {
         state.refreshing = false;
         state.firstLoad = false;
         refreshViteHealth();
-        refreshGitState();
+        refreshSelectedGitDetails();
         renderAll();
         screen.render();
     });
@@ -299,11 +300,24 @@ const projectBox = blessed.box({
     top: 3,
     left: 0,
     width: '50%',
-    height: '100%-5',
+    height: '55%-3',
     tags: true,
     border: { type: 'line' },
     style: { border: { fg: C.border } },
     label: ` ${fg(C.mid, bold('PROJECTS'))} `,
+    padding: { left: 1, right: 1 },
+});
+
+const gitPanel = blessed.box({
+    parent: screen,
+    top: '55%',
+    left: 0,
+    width: '50%',
+    bottom: 2,
+    tags: true,
+    border: { type: 'line' },
+    style: { border: { fg: C.border } },
+    label: ` ${fg(C.mid, bold('GIT'))} `,
     padding: { left: 1, right: 1 },
 });
 
@@ -363,6 +377,7 @@ projectBox.on('click', function(mouse) {
             state.selected = idx;
             state.logTab = 'vite';
             state.logFollow = true;
+            onProjectSelectionChanged();
             persistSession();
             renderAll();
             screen.render();
@@ -387,15 +402,9 @@ const detailBox = blessed.box({
 function renderDetail() {
     const p = PROJECTS[state.selected];
     const s = state.statuses[state.selected];
-    const git = state.gitState[state.selected];
 
     const titleLine = fg(p.accent, bold(p.display));
-
-    const gitSuffix = git
-        ? `   ${fg(C.dim, '⎇')} ${fg(git.dirty ? C.yellow : C.mid, git.branch)}` +
-          (git.dirty ? fg(C.yellow, ' ●') : '')
-        : '';
-    const urlLine = fg(C.dim, `https://${p.url}`) + gitSuffix;
+    const urlLine = fg(C.dim, `https://${p.url}`);
 
     const sep = fg(C.border, '─'.repeat(Math.max((detailBox.width || 30) - 4, 10)));
 
@@ -614,7 +623,6 @@ function renderStatusBar() {
         key('l', 'log'),
         key('G', 'follow'),
         key('a', 'activity'),
-        key('g', 'git'),
         key('Esc', 'cancel'),
         key('?', 'help'),
         key('q', 'quit'),
@@ -682,7 +690,7 @@ function toggleActivity() {
 }
 
 function overlayVisible() {
-    return activityVisible || helpVisible || gitVisible;
+    return activityVisible || helpVisible;
 }
 
 // ── Help overlay ───────────────────────────────────────────────────────────
@@ -738,138 +746,73 @@ function toggleHelp() {
     screen.render();
 }
 
-// ── Git overlay ────────────────────────────────────────────────────────────
+// ── Git panel ──────────────────────────────────────────────────────────────
 
-let gitVisible = false;
-let gitDetails = null;
-let gitLoading = false;
-
-const gitBox = blessed.box({
-    parent: screen,
-    top: 'center',
-    left: 'center',
-    width: '70%',
-    height: '70%',
-    tags: true,
-    border: { type: 'line' },
-    style: { border: { fg: C.mid } },
-    label: ` ${fg(C.mid, bold('GIT'))} `,
-    padding: { left: 2, right: 2, top: 1, bottom: 1 },
-    scrollable: true,
-    alwaysScroll: true,
-    mouse: true,
-    scrollbar: { ch: '█', style: { fg: C.dim } },
-    hidden: true,
-});
+function truncate(text, max) {
+    if (max <= 0) return '';
+    if (text.length <= max) return text;
+    return text.slice(0, Math.max(max - 1, 0)) + '…';
+}
 
 function renderGit() {
-    if (!gitVisible) return;
-    const p = PROJECTS[state.selected];
-    const header = fg(p.accent, bold(p.display));
+    const d = state.gitDetails;
+    const innerWidth = Math.max((gitPanel.width || 40) - 4, 20);
 
-    if (gitLoading) {
-        gitBox.setContent(`${header}\n\n  ${fg(C.dim, 'Reading git state...')}`);
-        return;
-    }
-    if (!gitDetails) {
-        gitBox.setContent(
-            `${header}\n\n  ${fg(C.dim, 'Not a git repository.')}\n\n` +
-            fg(C.dim, 'Press g or Esc to close.')
-        );
+    if (!d) {
+        gitPanel.setContent(`\n  ${fg(C.dim, 'Not a git repository')}`);
         return;
     }
 
-    const d = gitDetails;
     const branchColor = d.dirty ? C.yellow : C.bright;
-    const branchLine = `  ${fg(C.dim, '⎇')} ${fg(branchColor, bold(d.branch))}` +
-        (d.dirty ? fg(C.yellow, '  ●') : '');
+    const branchLine = `${fg(C.dim, '⎇')} ${fg(branchColor, bold(d.branch))}` +
+        (d.dirty ? fg(C.yellow, ' ●') : '');
 
     let upstreamLine;
     if (!d.upstream) {
-        upstreamLine = `  ${fg(C.dim, 'no upstream tracked')}`;
+        upstreamLine = fg(C.dim, 'no upstream tracked');
     } else {
         const ab = [];
-        if (d.ahead !== null && d.ahead > 0)  ab.push(fg(C.green,  `↑${d.ahead}`));
-        if (d.behind !== null && d.behind > 0) ab.push(fg(C.red,    `↓${d.behind}`));
+        if (d.ahead !== null && d.ahead > 0)   ab.push(fg(C.green, `↑${d.ahead}`));
+        if (d.behind !== null && d.behind > 0) ab.push(fg(C.red,   `↓${d.behind}`));
         const inSync = ab.length === 0 && d.ahead !== null && d.behind !== null;
-        const suffix = inSync ? fg(C.green, ' in sync') : (ab.length ? `  ${ab.join(' ')}` : '');
-        upstreamLine = `  ${fg(C.dim, '⇡')} ${fg(C.mid, d.upstream)}${suffix}`;
+        const suffix = inSync ? fg(C.green, ' ✓') : (ab.length ? ` ${ab.join(' ')}` : '');
+        upstreamLine = `${fg(C.dim, '⇡')} ${fg(C.mid, d.upstream)}${suffix}`;
     }
 
-    // Counts row
     const c = d.counts;
     const countParts = [];
-    if (c.staged > 0)     countParts.push(fg(C.green,   `${c.staged} staged`));
-    if (c.modified > 0)   countParts.push(fg(C.yellow,  `${c.modified} modified`));
-    if (c.untracked > 0)  countParts.push(fg(C.mid,     `${c.untracked} untracked`));
-    if (c.conflicted > 0) countParts.push(fg(C.red,     `${c.conflicted} conflicted`));
+    if (c.staged > 0)     countParts.push(fg(C.green,  `${c.staged}●`));
+    if (c.modified > 0)   countParts.push(fg(C.yellow, `${c.modified}✎`));
+    if (c.untracked > 0)  countParts.push(fg(C.mid,    `${c.untracked}?`));
+    if (c.conflicted > 0) countParts.push(fg(C.red,    `${c.conflicted}!`));
+    if (d.stash > 0)      countParts.push(fg(C.magenta, `${d.stash}⚑`));
     const countsLine = countParts.length > 0
-        ? `  ${countParts.join(fg(C.dim, ' · '))}`
-        : `  ${fg(C.green, '✓')} ${fg(C.dim, 'working tree clean')}`;
+        ? countParts.join(fg(C.dim, '  '))
+        : `${fg(C.green, '✓')} ${fg(C.dim, 'clean')}`;
 
-    const stashLine = d.stash > 0
-        ? `  ${fg(C.magenta, '⚑')} ${fg(C.mid, `${d.stash} stash${d.stash === 1 ? '' : 'es'}`)}`
-        : null;
+    const sep = fg(C.border, '─'.repeat(innerWidth));
+    const logHeader = fg(C.dim, 'RECENT');
 
-    const sepWidth = Math.max((gitBox.width || 60) - 8, 20);
-    const sep = fg(C.border, '─'.repeat(sepWidth));
-
-    const logHeader = fg(C.dim, bold('RECENT COMMITS'));
     const logLines = d.log.length === 0
-        ? [`  ${fg(C.dim, 'no commits yet')}`]
+        ? [fg(C.dim, '  (no commits)')]
         : d.log.map(entry => {
-            const hash = fg(C.cyan, entry.hash.padEnd(8));
-            const subj = fg(C.text, entry.subject);
-            const when = fg(C.dim, entry.rel);
-            const who  = fg(C.dim, entry.author);
-            return `  ${hash} ${subj}\n           ${when} · ${who}`;
+            const hash = fg(C.cyan, entry.hash);
+            const rel  = fg(C.dim, entry.rel);
+            // Reserve room: "hash " (8) + " rel" (up to 14) + padding
+            const subjRoom = Math.max(innerWidth - 10 - Math.min(entry.rel.length + 1, 16), 10);
+            const subj = fg(C.text, truncate(entry.subject, subjRoom));
+            return `${hash} ${subj} ${rel}`;
         });
 
     const lines = [
-        header,
-        '',
         branchLine,
         upstreamLine,
         countsLine,
-        ...(stashLine ? [stashLine] : []),
-        '',
         sep,
-        '',
         logHeader,
-        '',
         ...logLines,
-        '',
-        fg(C.dim, 'Press g or Esc to close.'),
     ];
-    gitBox.setContent(lines.join('\n'));
-}
-
-function loadGitDetails() {
-    const p = PROJECTS[state.selected];
-    const dir = path.join(WEBSERVER_DIR, p.name);
-    gitLoading = true;
-    renderGit();
-    screen.render();
-    // Dispatch the actual read on the next tick so the "loading" frame paints.
-    setImmediate(() => {
-        gitDetails = readGitDetails(dir);
-        gitLoading = false;
-        renderGit();
-        screen.render();
-    });
-}
-
-function toggleGit() {
-    gitVisible = !gitVisible;
-    if (gitVisible) {
-        gitBox.show();
-        gitBox.focus();
-        loadGitDetails();
-    } else {
-        gitBox.hide();
-        gitDetails = null;
-    }
-    screen.render();
+    gitPanel.setContent(lines.join('\n'));
 }
 
 // ── Render all ──────────────────────────────────────────────────────────────
@@ -878,9 +821,20 @@ function renderAll() {
     renderHeader();
     renderProjectList();
     renderDetail();
+    renderGit();
     renderLogView();
     renderStatusBar();
     renderActivity();
+}
+
+function onProjectSelectionChanged() {
+    // Re-read git details for the freshly-selected project. The regular 5s
+    // status refresh will also re-read them, but doing it immediately keeps
+    // the panel responsive to navigation.
+    if (state.gitSelectedIdx !== state.selected) {
+        state.gitDetails = null;
+        refreshSelectedGitDetails();
+    }
 }
 
 // ── Keybindings ─────────────────────────────────────────────────────────────
@@ -892,6 +846,7 @@ screen.key(['j', 'down'], () => {
     state.selected = Math.min(state.selected + 1, PROJECTS.length - 1);
     state.logTab = 'vite'; // reset log tab on project change
     state.logFollow = true;
+    onProjectSelectionChanged();
     persistSession();
     renderAll();
     screen.render();
@@ -902,6 +857,7 @@ screen.key(['k', 'up'], () => {
     state.selected = Math.max(state.selected - 1, 0);
     state.logTab = 'vite';
     state.logFollow = true;
+    onProjectSelectionChanged();
     persistSession();
     renderAll();
     screen.render();
@@ -963,16 +919,9 @@ screen.key(['G', 'end'], () => {
 // Activity toggle
 screen.key('a', toggleActivity);
 screen.key('?', toggleHelp);
-screen.key('g', () => {
-    // Toggle works regardless of other overlays — only the active overlay's
-    // key handler re-triggers, but `g` should open even when nothing's open.
-    if (activityVisible || helpVisible) return;
-    toggleGit();
-});
 screen.key('escape', () => {
     if (activityVisible) { toggleActivity(); return; }
     if (helpVisible)     { toggleHelp();     return; }
-    if (gitVisible)      { toggleGit();      return; }
     if (state.actionChild) {
         if (cancelChild(state.actionChild)) {
             addActivity(`${fg(C.yellow, '⊘')} cancelling ${state.actionRunning}...`);
