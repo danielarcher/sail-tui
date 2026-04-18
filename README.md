@@ -58,6 +58,7 @@ Requires Node.js (v18+). Dependencies are installed locally in `sail-tui/node_mo
 | `R` (Shift) | Restart all projects                |
 | `o`         | Open selected project URL in the default browser |
 | `l`         | Cycle log tabs (Vite → Reverb → Queue) |
+| `G` / `End` | Jump to the end of the log and resume follow mode |
 | `a`         | Toggle activity log overlay         |
 | `Escape`    | Close activity overlay              |
 | `f`         | Force status refresh                |

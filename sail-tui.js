@@ -14,6 +14,7 @@ const { createActivity } = require('./lib/activity');
 const { buildSailAllArgs, labelForAction } = require('./lib/actions');
 const { validateProjects } = require('./lib/validateProjects');
 const { openUrl } = require('./lib/browser');
+const { isAtBottom } = require('./lib/followMode');
 const errorBoundary = require('./lib/errorBoundary');
 
 try {
@@ -39,6 +40,7 @@ const state = {
     refreshing: false,
     actionRunning: null,
     logTab: 'vite',
+    logFollow: true,
     spinFrame: 0,
     firstLoad: true,
 };
@@ -473,13 +475,32 @@ const logBox = blessed.box({
     },
 });
 
+// Drop follow mode whenever the user scrolls away from the bottom; resume
+// it automatically when they scroll back down. This lets log refreshes
+// stop fighting the user when they're trying to read an error above the
+// tail. Don't re-render from here — the 2s log refresh interval will pick
+// up the new state on its next tick, and the "paused" label update is not
+// urgent.
+logBox.on('scroll', () => {
+    state.logFollow = isAtBottom(logBox.getScrollPerc());
+});
+
 function renderLogView() {
     const p = PROJECTS[state.selected];
     const availH = Math.max((logBox.height || 10) - 2, 5);
     const lines = tailLog(p.name, state.logTab, availH);
 
+    const prevScroll = logBox.getScroll();
     logBox.setContent(lines.join('\n'));
-    logBox.setScrollPerc(100);
+    if (state.logFollow) {
+        logBox.setScrollPerc(100);
+    } else {
+        // Preserve the line the user was looking at across refreshes
+        logBox.scrollTo(prevScroll);
+    }
+
+    const suffix = state.logFollow ? '' : fg(C.dim, ' · paused (G to resume)');
+    logBox.setLabel(` ${fg(C.mid, bold('LOGS'))}${suffix} `);
     renderLogTabs();
 }
 
@@ -514,6 +535,7 @@ function renderStatusBar() {
         key('o', 'open'),
         key('SHIFT', 'all'),
         key('l', 'log'),
+        key('G', 'follow'),
         key('a', 'activity'),
         key('q', 'quit'),
     ].join(fg(C.border, '  '));
@@ -598,6 +620,7 @@ screen.key(['j', 'down'], () => {
     if (activityVisible) return;
     state.selected = Math.min(state.selected + 1, PROJECTS.length - 1);
     state.logTab = 'vite'; // reset log tab on project change
+    state.logFollow = true;
     renderAll();
     screen.render();
 });
@@ -606,6 +629,7 @@ screen.key(['k', 'up'], () => {
     if (activityVisible) return;
     state.selected = Math.max(state.selected - 1, 0);
     state.logTab = 'vite';
+    state.logFollow = true;
     renderAll();
     screen.render();
 });
@@ -648,6 +672,16 @@ screen.key('l', () => {
     if (p.queue) tabs.push('queue');
     const cur = tabs.indexOf(state.logTab);
     state.logTab = tabs[(cur + 1) % tabs.length];
+    state.logFollow = true;
+    renderLogView();
+    screen.render();
+});
+
+// Jump to bottom of log + resume follow mode
+screen.key(['G', 'end'], () => {
+    if (activityVisible) return;
+    state.logFollow = true;
+    logBox.setScrollPerc(100);
     renderLogView();
     screen.render();
 });
