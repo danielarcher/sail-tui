@@ -16,11 +16,43 @@ test('buildStatusScript starts with a bash shebang', () => {
     assert.ok(script.startsWith('#!/bin/bash\n'));
 });
 
-test('buildStatusScript emits containers + vite for every project', () => {
+test('buildStatusScript probes containers via sail ps for every project', () => {
     const script = buildStatusScript(SAMPLE, '/srv');
-    assert.match(script, /CHECK:0:\$\(cd "\/srv\/alpha" && \.\/vendor\/bin\/sail ps -q/);
-    assert.match(script, /CHECK:0:\$\(docker exec alpha-laravel\.test-1 pgrep -c -f 'node\.\*vite'/);
-    assert.match(script, /CHECK:1:\$\(cd "\/srv\/beta" && \.\/vendor\/bin\/sail ps -q/);
+    assert.match(script, /C0=\$\(cd "\/srv\/alpha" && \.\/vendor\/bin\/sail ps -q/);
+    assert.match(script, /C1=\$\(cd "\/srv\/beta" && \.\/vendor\/bin\/sail ps -q/);
+    assert.match(script, /C2=\$\(cd "\/srv\/gamma" && \.\/vendor\/bin\/sail ps -q/);
+});
+
+test('buildStatusScript echoes the container count as the first check per project', () => {
+    const script = buildStatusScript(SAMPLE, '/srv');
+    assert.ok(script.includes('echo "CHECK:0:$C0"'));
+    assert.ok(script.includes('echo "CHECK:1:$C1"'));
+    assert.ok(script.includes('echo "CHECK:2:$C2"'));
+});
+
+test('buildStatusScript probes vite inside docker when containers are up', () => {
+    const script = buildStatusScript(SAMPLE, '/srv');
+    assert.match(script, /docker exec alpha-laravel\.test-1 pgrep -c -f 'node\.\*vite'/);
+    assert.match(script, /docker exec beta-laravel\.test-1 pgrep -c -f 'node\.\*vite'/);
+    assert.match(script, /docker exec gamma-laravel\.test-1 pgrep -c -f 'node\.\*vite'/);
+});
+
+test('buildStatusScript gates docker exec behind an if-containers-up check', () => {
+    const script = buildStatusScript(SAMPLE, '/srv');
+    // There must be at least one per-project guard wrapping docker exec calls.
+    assert.match(script, /if \[ "\$C0" -gt 0 \]; then/);
+    assert.match(script, /if \[ "\$C1" -gt 0 \]; then/);
+    assert.match(script, /if \[ "\$C2" -gt 0 \]; then/);
+});
+
+test('buildStatusScript emits zero fallbacks in the else branch', () => {
+    // For a project with reverb+queue (gamma) the else branch must emit
+    // three zero CHECK lines so the parser sees a full slate.
+    const script = buildStatusScript(SAMPLE, '/srv');
+    const gammaBlock = script.split('C2=')[1] || '';
+    const elseBranch = gammaBlock.split('else')[1] || '';
+    const zeros = (elseBranch.match(/echo "CHECK:2:0"/g) || []).length;
+    assert.equal(zeros, 3, 'gamma should emit 3 zero checks (vite + reverb + queue)');
 });
 
 test('buildStatusScript emits reverb only for projects that have it', () => {
