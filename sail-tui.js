@@ -15,6 +15,7 @@ const { buildSailAllArgs, labelForAction } = require('./lib/actions');
 const { validateProjects } = require('./lib/validateProjects');
 const { openUrl } = require('./lib/browser');
 const { isAtBottom } = require('./lib/followMode');
+const { loadState, saveState, resolveSelectedIndex, resolveLogTab } = require('./lib/persistence');
 const errorBoundary = require('./lib/errorBoundary');
 
 try {
@@ -34,16 +35,27 @@ const SAIL_ALL = path.join(WEBSERVER_DIR, 'sail-all');
 
 const activity = createActivity();
 
+const persisted = loadState();
+const initialSelected = resolveSelectedIndex(PROJECTS, persisted.selectedProject);
+const initialLogTab = resolveLogTab(PROJECTS[initialSelected], persisted.logTab);
+
 const state = {
-    selected: 0,
+    selected: initialSelected,
     statuses: PROJECTS.map(() => ({ containers: false, vite: false, reverb: false, queue: false })),
     refreshing: false,
     actionRunning: null,
-    logTab: 'vite',
+    logTab: initialLogTab,
     logFollow: true,
     spinFrame: 0,
     firstLoad: true,
 };
+
+function persistSession() {
+    saveState({
+        selectedProject: PROJECTS[state.selected].name,
+        logTab: state.logTab,
+    });
+}
 
 const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -294,8 +306,11 @@ projectBox.on('click', function(mouse) {
     if (mouse && typeof mouse.y === 'number') {
         const boxTop = typeof projectBox.atop === 'number' ? projectBox.atop : projectBox.top;
         const idx = mouse.y - boxTop - 1;
-        if (idx >= 0 && idx < PROJECTS.length) {
+        if (idx >= 0 && idx < PROJECTS.length && idx !== state.selected) {
             state.selected = idx;
+            state.logTab = 'vite';
+            state.logFollow = true;
+            persistSession();
             renderAll();
             screen.render();
         }
@@ -621,6 +636,7 @@ screen.key(['j', 'down'], () => {
     state.selected = Math.min(state.selected + 1, PROJECTS.length - 1);
     state.logTab = 'vite'; // reset log tab on project change
     state.logFollow = true;
+    persistSession();
     renderAll();
     screen.render();
 });
@@ -630,6 +646,7 @@ screen.key(['k', 'up'], () => {
     state.selected = Math.max(state.selected - 1, 0);
     state.logTab = 'vite';
     state.logFollow = true;
+    persistSession();
     renderAll();
     screen.render();
 });
@@ -673,6 +690,7 @@ screen.key('l', () => {
     const cur = tabs.indexOf(state.logTab);
     state.logTab = tabs[(cur + 1) % tabs.length];
     state.logFollow = true;
+    persistSession();
     renderLogView();
     screen.render();
 });
