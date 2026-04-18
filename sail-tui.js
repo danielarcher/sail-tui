@@ -18,7 +18,7 @@ const { isAtBottom } = require('./lib/followMode');
 const { parseViteHealth, STATES: VITE_STATES } = require('./lib/viteHealth');
 const { cancelChild } = require('./lib/cancel');
 const { formatHelpLines } = require('./lib/help');
-const { readGitState } = require('./lib/git');
+const { readGitState, readGitDetails } = require('./lib/git');
 const { loadState, saveState, resolveSelectedIndex, resolveLogTab } = require('./lib/persistence');
 const errorBoundary = require('./lib/errorBoundary');
 
@@ -681,7 +681,7 @@ function toggleActivity() {
 }
 
 function overlayVisible() {
-    return activityVisible || helpVisible;
+    return activityVisible || helpVisible || gitVisible;
 }
 
 // ── Help overlay ───────────────────────────────────────────────────────────
@@ -733,6 +733,140 @@ function toggleHelp() {
         helpBox.focus();
     } else {
         helpBox.hide();
+    }
+    screen.render();
+}
+
+// ── Git overlay ────────────────────────────────────────────────────────────
+
+let gitVisible = false;
+let gitDetails = null;
+let gitLoading = false;
+
+const gitBox = blessed.box({
+    parent: screen,
+    top: 'center',
+    left: 'center',
+    width: '70%',
+    height: '70%',
+    tags: true,
+    border: { type: 'line' },
+    style: { border: { fg: C.mid } },
+    label: ` ${fg(C.mid, bold('GIT'))} `,
+    padding: { left: 2, right: 2, top: 1, bottom: 1 },
+    scrollable: true,
+    alwaysScroll: true,
+    mouse: true,
+    scrollbar: { ch: '█', style: { fg: C.dim } },
+    hidden: true,
+});
+
+function renderGit() {
+    if (!gitVisible) return;
+    const p = PROJECTS[state.selected];
+    const header = fg(p.accent, bold(p.display));
+
+    if (gitLoading) {
+        gitBox.setContent(`${header}\n\n  ${fg(C.dim, 'Reading git state...')}`);
+        return;
+    }
+    if (!gitDetails) {
+        gitBox.setContent(
+            `${header}\n\n  ${fg(C.dim, 'Not a git repository.')}\n\n` +
+            fg(C.dim, 'Press g or Esc to close.')
+        );
+        return;
+    }
+
+    const d = gitDetails;
+    const branchColor = d.dirty ? C.yellow : C.bright;
+    const branchLine = `  ${fg(C.dim, '⎇')} ${fg(branchColor, bold(d.branch))}` +
+        (d.dirty ? fg(C.yellow, '  ●') : '');
+
+    let upstreamLine;
+    if (!d.upstream) {
+        upstreamLine = `  ${fg(C.dim, 'no upstream tracked')}`;
+    } else {
+        const ab = [];
+        if (d.ahead !== null && d.ahead > 0)  ab.push(fg(C.green,  `↑${d.ahead}`));
+        if (d.behind !== null && d.behind > 0) ab.push(fg(C.red,    `↓${d.behind}`));
+        const inSync = ab.length === 0 && d.ahead !== null && d.behind !== null;
+        const suffix = inSync ? fg(C.green, ' in sync') : (ab.length ? `  ${ab.join(' ')}` : '');
+        upstreamLine = `  ${fg(C.dim, '⇡')} ${fg(C.mid, d.upstream)}${suffix}`;
+    }
+
+    // Counts row
+    const c = d.counts;
+    const countParts = [];
+    if (c.staged > 0)     countParts.push(fg(C.green,   `${c.staged} staged`));
+    if (c.modified > 0)   countParts.push(fg(C.yellow,  `${c.modified} modified`));
+    if (c.untracked > 0)  countParts.push(fg(C.mid,     `${c.untracked} untracked`));
+    if (c.conflicted > 0) countParts.push(fg(C.red,     `${c.conflicted} conflicted`));
+    const countsLine = countParts.length > 0
+        ? `  ${countParts.join(fg(C.dim, ' · '))}`
+        : `  ${fg(C.green, '✓')} ${fg(C.dim, 'working tree clean')}`;
+
+    const stashLine = d.stash > 0
+        ? `  ${fg(C.magenta, '⚑')} ${fg(C.mid, `${d.stash} stash${d.stash === 1 ? '' : 'es'}`)}`
+        : null;
+
+    const sepWidth = Math.max((gitBox.width || 60) - 8, 20);
+    const sep = fg(C.border, '─'.repeat(sepWidth));
+
+    const logHeader = fg(C.dim, bold('RECENT COMMITS'));
+    const logLines = d.log.length === 0
+        ? [`  ${fg(C.dim, 'no commits yet')}`]
+        : d.log.map(entry => {
+            const hash = fg(C.cyan, entry.hash.padEnd(8));
+            const subj = fg(C.text, entry.subject);
+            const when = fg(C.dim, entry.rel);
+            const who  = fg(C.dim, entry.author);
+            return `  ${hash} ${subj}\n           ${when} · ${who}`;
+        });
+
+    const lines = [
+        header,
+        '',
+        branchLine,
+        upstreamLine,
+        countsLine,
+        ...(stashLine ? [stashLine] : []),
+        '',
+        sep,
+        '',
+        logHeader,
+        '',
+        ...logLines,
+        '',
+        fg(C.dim, 'Press g or Esc to close.'),
+    ];
+    gitBox.setContent(lines.join('\n'));
+}
+
+function loadGitDetails() {
+    const p = PROJECTS[state.selected];
+    const dir = path.join(WEBSERVER_DIR, p.name);
+    gitLoading = true;
+    renderGit();
+    screen.render();
+    // Dispatch the actual read on the next tick so the "loading" frame paints.
+    setImmediate(() => {
+        gitDetails = readGitDetails(dir);
+        gitLoading = false;
+        renderGit();
+        screen.render();
+    });
+}
+
+function toggleGit() {
+    gitVisible = !gitVisible;
+    if (gitVisible) {
+        gitBox.show();
+        gitBox.focus();
+        loadGitDetails();
+    } else {
+        gitBox.hide();
+        gitDetails = null;
     }
     screen.render();
 }
@@ -828,9 +962,16 @@ screen.key(['G', 'end'], () => {
 // Activity toggle
 screen.key('a', toggleActivity);
 screen.key('?', toggleHelp);
+screen.key('g', () => {
+    // Toggle works regardless of other overlays — only the active overlay's
+    // key handler re-triggers, but `g` should open even when nothing's open.
+    if (activityVisible || helpVisible) return;
+    toggleGit();
+});
 screen.key('escape', () => {
     if (activityVisible) { toggleActivity(); return; }
     if (helpVisible)     { toggleHelp();     return; }
+    if (gitVisible)      { toggleGit();      return; }
     if (state.actionChild) {
         if (cancelChild(state.actionChild)) {
             addActivity(`${fg(C.yellow, '⊘')} cancelling ${state.actionRunning}...`);

@@ -61,6 +61,7 @@ Requires Node.js (v18+). Dependencies are installed locally in `sail-tui/node_mo
 | `G` / `End` | Jump to the end of the log and resume follow mode |
 | `?`         | Toggle the help / keybindings overlay |
 | `a`         | Toggle activity log overlay         |
+| `g`         | Toggle git overlay (branch, upstream, status, recent commits) |
 | `Escape`    | Close the activity overlay, or cancel the in-flight action |
 | `f`         | Force status refresh                |
 | `q` / `Ctrl+C` | Quit                            |
