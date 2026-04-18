@@ -12,6 +12,7 @@ const { readLogTail } = require('./lib/logs');
 const { buildStatusScript, parseStatusOutput } = require('./lib/status');
 const { createActivity } = require('./lib/activity');
 const { buildSailAllArgs, labelForAction } = require('./lib/actions');
+const errorBoundary = require('./lib/errorBoundary');
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -151,6 +152,11 @@ const screen = blessed.screen({
     smartCSR: true,
     title: 'Sail Dashboard',
     fullUnicode: true,
+});
+
+errorBoundary.install({
+    screen,
+    logPath: path.join(LOGS_DIR, '.sail-tui-error.log'),
 });
 
 // ── Header ──────────────────────────────────────────────────────────────────
