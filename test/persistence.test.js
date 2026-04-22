@@ -91,9 +91,11 @@ test('resolveSelectedIndex is safe on malformed project lists', () => {
 });
 
 test('resolveLogTab returns the saved tab when available for the project', () => {
-    assert.equal(resolveLogTab(SAMPLE_PROJECTS[2], 'queue'),  'queue');
-    assert.equal(resolveLogTab(SAMPLE_PROJECTS[1], 'reverb'), 'reverb');
-    assert.equal(resolveLogTab(SAMPLE_PROJECTS[0], 'vite'),   'vite');
+    assert.equal(resolveLogTab(SAMPLE_PROJECTS[2], 'queue'),   'queue');
+    assert.equal(resolveLogTab(SAMPLE_PROJECTS[1], 'reverb'),  'reverb');
+    assert.equal(resolveLogTab(SAMPLE_PROJECTS[0], 'vite'),    'vite');
+    assert.equal(resolveLogTab(SAMPLE_PROJECTS[0], 'laravel'), 'laravel', 'laravel is always available');
+    assert.equal(resolveLogTab(SAMPLE_PROJECTS[0], 'tests'),   'tests',   'tests is always available');
 });
 
 test('resolveLogTab falls back to vite when the saved tab is unavailable', () => {

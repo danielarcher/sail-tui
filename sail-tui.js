@@ -8,7 +8,8 @@ const path = require('path');
 
 const { PROJECTS } = require('./lib/projects');
 const { C, fg, bold } = require('./lib/theme');
-const { readLogTail } = require('./lib/logs');
+const { readLogTail, readProjectLogTail, detectLaravelIssue } = require('./lib/logs');
+const { sliceRenderedChars, hasBlessedTags } = require('./lib/hscroll');
 const { buildStatusScript, parseStatusOutput } = require('./lib/status');
 const { createActivity } = require('./lib/activity');
 const { buildSailAllArgs, labelForAction } = require('./lib/actions');
@@ -59,9 +60,13 @@ const state = {
     actionChild: null,
     logTab: initialLogTab,
     logFollow: true,
+    logScrollH: 0,
     spinFrame: 0,
     firstLoad: true,
+    laravelIssues: PROJECTS.map(() => ({ kind: 'none' })),
 };
+
+const LOG_HSCROLL_STEP = 8;
 
 function refreshSelectedGitDetails() {
     const p = PROJECTS[state.selected];
@@ -78,6 +83,15 @@ function refreshViteHealth() {
         }
         const result = readLogTail(LOGS_DIR, p.name, 'vite', 100);
         state.viteHealth[i] = result.kind === 'ok' ? parseViteHealth(result.lines) : null;
+    });
+}
+
+function refreshLaravelIssues() {
+    PROJECTS.forEach((p, i) => {
+        const result = readProjectLogTail(WEBSERVER_DIR, p.name, 'storage/logs/laravel.log', 100);
+        state.laravelIssues[i] = result.kind === 'ok'
+            ? detectLaravelIssue(result.lines)
+            : { kind: 'none' };
     });
 }
 
@@ -132,6 +146,7 @@ function refreshAllStatuses() {
         state.refreshing = false;
         state.firstLoad = false;
         refreshViteHealth();
+        refreshLaravelIssues();
         refreshSelectedGitDetails();
         renderAll();
         screen.render();
@@ -297,14 +312,85 @@ function runTests(projectName) {
 
 // ── Log tailing ─────────────────────────────────────────────────────────────
 
+// Services whose logs live inside the project directory instead of the
+// managed .sail-logs/ directory. Map them to their relative path.
+const PROJECT_LOG_PATHS = {
+    laravel: 'storage/logs/laravel.log',
+};
+
+function readTailForService(projectName, service, maxLines) {
+    const relPath = PROJECT_LOG_PATHS[service];
+    if (relPath) {
+        return readProjectLogTail(WEBSERVER_DIR, projectName, relPath, maxLines);
+    }
+    return readLogTail(LOGS_DIR, projectName, service, maxLines);
+}
+
 function tailLog(projectName, service, maxLines) {
-    const result = readLogTail(LOGS_DIR, projectName, service, maxLines);
+    const result = readTailForService(projectName, service, maxLines);
     switch (result.kind) {
         case 'missing': return [fg(C.dim, `  No ${service} log file`)];
         case 'empty':   return [fg(C.dim, `  ${service} log is empty`)];
         case 'error':   return [fg(C.dim, `  Error reading ${service} log`)];
         case 'ok':      return result.lines.map(l => '  ' + l);
     }
+}
+
+// ── Laravel fix ─────────────────────────────────────────────────────────────
+
+// Belt-and-suspenders recovery for a wedged Laravel app. Works in two steps:
+//
+//   1. Remove compiled Blade views directly on the host. This covers the case
+//      where the view cache is so broken that `artisan view:clear` itself
+//      can't boot the framework.
+//   2. Run `artisan optimize:clear` inside Sail to flush cache/config/route/
+//      view/event caches the "official" way.
+//
+// Step 2 requires the container to be up. If it isn't, the host-side rm still
+// unblocks the app once the container comes back.
+function runLaravelFix(projectName) {
+    if (state.actionRunning) return;
+
+    state.actionRunning = `fix ${projectName}`;
+    addActivity(`${fg(C.yellow, SPIN[0])} fix ${bold(projectName)}...`);
+    renderAll();
+    screen.render();
+
+    const dir = path.join(WEBSERVER_DIR, projectName);
+    const viewsGlob = path.join(dir, 'storage', 'framework', 'views');
+
+    // Single bash pipeline: nuke host-side compiled views, then try artisan.
+    // The `|| true` after rm keeps the chain alive if the directory doesn't
+    // exist yet (fresh checkout). artisan failure is reported but doesn't
+    // prevent the rm from having taken effect.
+    const cmd = [
+        `cd "${dir}"`,
+        `find "${viewsGlob}" -maxdepth 1 -type f -name '*.php' -delete 2>/dev/null || true`,
+        `./vendor/bin/sail artisan optimize:clear`,
+    ].join(' && ');
+
+    const child = spawn('bash', ['-c', cmd], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: dir,
+    });
+    state.actionChild = child;
+
+    child.on('close', (code, signal) => {
+        const prev = state.actionRunning;
+        state.actionRunning = null;
+        state.actionChild = null;
+        if (signal) {
+            addActivity(`${fg(C.yellow, '⊘')} ${prev} ${fg(C.yellow, `cancelled (${signal})`)}`);
+        } else if (code === 0) {
+            addActivity(`${fg(C.green, '✓')} ${prev} ${fg(C.dim, 'compiled views cleared + optimize:clear')}`);
+        } else {
+            // Host-side rm succeeded even if artisan failed — the app should
+            // still recover on next request.
+            addActivity(`${fg(C.yellow, '⚠')} ${prev} ${fg(C.yellow, 'views cleared, artisan failed (container down?)')}`);
+        }
+        renderAll();
+        screen.render();
+    });
 }
 
 // ── Screen ──────────────────────────────────────────────────────────────────
@@ -461,6 +547,7 @@ projectBox.on('click', function(mouse) {
             state.selected = idx;
             state.logTab = 'vite';
             state.logFollow = true;
+            state.logScrollH = 0;
             onProjectSelectionChanged();
             persistSession();
             renderAll();
@@ -618,10 +705,11 @@ const btnDimFg = '#dddddd';
 makeBtn(btnRow2, 'cache:clear', 1,  btnDim, btnDimFg, () => runArtisan(PROJECTS[state.selected].name, ['cache:clear']));
 makeBtn(btnRow2, 'view:clear',  16, btnDim, btnDimFg, () => runArtisan(PROJECTS[state.selected].name, ['view:clear']));
 makeBtn(btnRow2, 'flush all',   30, btnDim, C.orange, () => runArtisan(PROJECTS[state.selected].name, ['cache:clear', 'view:clear', 'route:clear', 'config:clear']));
+makeBtn(btnRow2, 'Fix Laravel', 43, C.red,  '#ffffff', () => runLaravelFix(PROJECTS[state.selected].name));
 
 // ── Log tabs (clickable) ────────────────────────────────────────────────────
 
-const TAB_DEFS = ['vite', 'reverb', 'queue', 'tests'];
+const TAB_DEFS = ['vite', 'reverb', 'queue', 'laravel', 'tests'];
 const tabButtons = {};
 let tabOffset = 1;
 
@@ -641,6 +729,7 @@ TAB_DEFS.forEach((t, i) => {
     });
     btn.on('press', () => {
         state.logTab = t;
+        state.logScrollH = 0;
         renderLogTabs();
         renderLogView();
         screen.render();
@@ -651,6 +740,7 @@ TAB_DEFS.forEach((t, i) => {
 
 function renderLogTabs() {
     const p = PROJECTS[state.selected];
+    const laravelIssue = state.laravelIssues[state.selected] || { kind: 'none' };
 
     TAB_DEFS.forEach(t => {
         const btn = tabButtons[t];
@@ -658,6 +748,7 @@ function renderLogTabs() {
             t === 'vite' ||
             (t === 'reverb' && p.reverb) ||
             (t === 'queue'  && p.queue)  ||
+            t === 'laravel' ||
             t === 'tests';
         if (!visible) {
             btn.hide();
@@ -665,7 +756,17 @@ function renderLogTabs() {
         }
         btn.show();
         const active = state.logTab === t;
-        btn.style.fg = active ? C.bright : C.dim;
+
+        // Signal laravel issues by coloring the tab label even when inactive,
+        // so a user scanning the dashboard notices something broke without
+        // having to click around.
+        let inactiveFg = C.dim;
+        if (t === 'laravel') {
+            if (laravelIssue.kind === 'stale_views') inactiveFg = C.red;
+            else if (laravelIssue.kind === 'error')  inactiveFg = C.orange;
+        }
+
+        btn.style.fg = active ? C.bright : inactiveFg;
         btn.style.bg = active ? C.border : undefined;
         btn.style.bold = active;
     });
@@ -685,12 +786,17 @@ const logBox = blessed.box({
     label: ` ${fg(C.mid, bold('LOGS'))} `,
     scrollable: true,
     alwaysScroll: true,
+    // Keep each log line on a single row; overflow is handled by our own
+    // horizontal scroll (see ←/→ in keybindings). Wrapping a 500-char
+    // stack-trace line destroys the visual shape of the tail.
+    wrap: false,
     mouse: true,
     scrollbar: {
         ch: '█',
         style: { fg: C.dim },
     },
 });
+
 
 // Drop follow mode whenever the user scrolls away from the bottom; resume
 // it automatically when they scroll back down. This lets log refreshes
@@ -705,7 +811,30 @@ logBox.on('scroll', () => {
 function renderLogView() {
     const p = PROJECTS[state.selected];
     const availH = Math.max((logBox.height || 10) - 2, 5);
-    const lines = tailLog(p.name, state.logTab, availH);
+
+    let lines;
+    let banner = null;
+    if (state.logTab === 'laravel') {
+        const issue = state.laravelIssues[state.selected] || { kind: 'none' };
+        if (issue.kind === 'stale_views') {
+            banner = `  ${fg(C.red, bold('⚠'))} ${fg(C.red, issue.hint)}`;
+        } else if (issue.kind === 'error') {
+            banner = `  ${fg(C.orange, bold('⚠'))} ${fg(C.orange, issue.hint)}`;
+        }
+        lines = tailLog(p.name, 'laravel', banner ? availH - 2 : availH);
+        if (banner) lines = [banner, fg(C.dim, '  ─'), ...lines];
+    } else {
+        lines = tailLog(p.name, state.logTab, availH);
+    }
+
+    // Apply horizontal scroll. Skip lines that contain real blessed tags —
+    // status messages, banners, the ─ separator — since they're already
+    // narrower than the pane and slicing inside a tag breaks rendering.
+    if (state.logScrollH > 0) {
+        lines = lines.map(l =>
+            hasBlessedTags(l) ? l : sliceRenderedChars(l, state.logScrollH)
+        );
+    }
 
     const prevScroll = logBox.getScroll();
     logBox.setContent(lines.join('\n'));
@@ -716,7 +845,10 @@ function renderLogView() {
         logBox.scrollTo(prevScroll);
     }
 
-    const suffix = state.logFollow ? '' : fg(C.dim, ' · paused (G to resume)');
+    const parts = [];
+    if (!state.logFollow) parts.push(fg(C.dim, 'paused (G to resume)'));
+    if (state.logScrollH > 0) parts.push(fg(C.dim, `→ +${state.logScrollH}c (0 to reset)`));
+    const suffix = parts.length ? fg(C.dim, ' · ') + parts.join(fg(C.dim, ' · ')) : '';
     logBox.setLabel(` ${fg(C.mid, bold('LOGS'))}${suffix} `);
     renderLogTabs();
 }
@@ -978,6 +1110,7 @@ screen.key(['j', 'down'], () => {
     state.selected = Math.min(state.selected + 1, PROJECTS.length - 1);
     state.logTab = 'vite'; // reset log tab on project change
     state.logFollow = true;
+    state.logScrollH = 0;
     onProjectSelectionChanged();
     persistSession();
     renderAll();
@@ -989,6 +1122,7 @@ screen.key(['k', 'up'], () => {
     state.selected = Math.max(state.selected - 1, 0);
     state.logTab = 'vite';
     state.logFollow = true;
+    state.logScrollH = 0;
     onProjectSelectionChanged();
     persistSession();
     renderAll();
@@ -1003,6 +1137,7 @@ screen.key('r', () => { if (!overlayVisible()) runAction('restart', PROJECTS[sta
 screen.key('h', () => { if (!overlayVisible()) runAction('heal', PROJECTS[state.selected].name); });
 screen.key('c', () => { if (!overlayVisible()) runArtisan(PROJECTS[state.selected].name, ['cache:clear', 'view:clear']); });
 screen.key('t', () => { if (!overlayVisible()) runTests(PROJECTS[state.selected].name); });
+screen.key('S-f', () => { if (!overlayVisible()) runLaravelFix(PROJECTS[state.selected].name); });
 
 screen.key('o', () => {
     if (overlayVisible()) return;
@@ -1032,19 +1167,48 @@ screen.key('l', () => {
     const tabs = ['vite'];
     if (p.reverb) tabs.push('reverb');
     if (p.queue) tabs.push('queue');
+    tabs.push('laravel');
+    tabs.push('tests');
     const cur = tabs.indexOf(state.logTab);
     state.logTab = tabs[(cur + 1) % tabs.length];
     state.logFollow = true;
+    state.logScrollH = 0;
     persistSession();
     renderLogView();
     screen.render();
 });
 
-// Jump to bottom of log + resume follow mode
+// Jump to bottom of log + resume follow mode + reset horizontal scroll
 screen.key(['G', 'end'], () => {
     if (overlayVisible()) return;
     state.logFollow = true;
+    state.logScrollH = 0;
     logBox.setScrollPerc(100);
+    renderLogView();
+    screen.render();
+});
+
+// Horizontal scroll (log lines never wrap — this pans across them).
+screen.key('left', () => {
+    if (overlayVisible()) return;
+    if (state.logScrollH === 0) return;
+    state.logScrollH = Math.max(0, state.logScrollH - LOG_HSCROLL_STEP);
+    renderLogView();
+    screen.render();
+});
+
+screen.key('right', () => {
+    if (overlayVisible()) return;
+    state.logScrollH += LOG_HSCROLL_STEP;
+    renderLogView();
+    screen.render();
+});
+
+// Quick reset — mirrors vim's "go to column 0".
+screen.key('0', () => {
+    if (overlayVisible()) return;
+    if (state.logScrollH === 0) return;
+    state.logScrollH = 0;
     renderLogView();
     screen.render();
 });
@@ -1091,6 +1255,7 @@ setInterval(() => refreshAllStatuses(), 5000);
 // Auto-refresh logs every 2s
 setInterval(() => {
     refreshViteHealth();
+    refreshLaravelIssues();
     renderLogView();
     renderProjectList();
     renderDetail();

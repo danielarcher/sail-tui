@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { readLogTail, sanitizeLogLine } = require('../lib/logs');
+const { readLogTail, readProjectLogTail, sanitizeLogLine, detectLaravelIssue } = require('../lib/logs');
 
 function makeTempDir() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'sail-tui-logs-'));
@@ -16,6 +16,13 @@ function writeLog(dir, project, service, content) {
     const p = path.join(dir, `${project}-${service}.log`);
     fs.writeFileSync(p, content);
     return p;
+}
+
+function writeProjectLog(webserverDir, project, relPath, content) {
+    const abs = path.join(webserverDir, project, relPath);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+    return abs;
 }
 
 test('sanitizeLogLine strips ANSI escape sequences', () => {
@@ -87,4 +94,56 @@ test('readLogTail respects a custom maxBytes', () => {
     assert.equal(result.kind, 'ok');
     // Last 5 bytes are "eeee\n"; filter(Boolean) keeps "eeee"
     assert.deepEqual(result.lines, ['eeee']);
+});
+
+test('readProjectLogTail returns missing when the project log does not exist', () => {
+    const dir = makeTempDir();
+    const result = readProjectLogTail(dir, 'ghost', 'storage/logs/laravel.log', 10);
+    assert.equal(result.kind, 'missing');
+});
+
+test('readProjectLogTail reads the tail of a project-scoped log', () => {
+    const dir = makeTempDir();
+    writeProjectLog(dir, 'void-crown-arena', 'storage/logs/laravel.log',
+        'a\nb\nc\nd\n');
+    const result = readProjectLogTail(dir, 'void-crown-arena', 'storage/logs/laravel.log', 2);
+    assert.equal(result.kind, 'ok');
+    assert.deepEqual(result.lines, ['c', 'd']);
+});
+
+test('readProjectLogTail sanitizes ANSI + curly braces like readLogTail', () => {
+    const dir = makeTempDir();
+    writeProjectLog(dir, 'foo', 'storage/logs/laravel.log',
+        '\x1b[31merror\x1b[0m in {42}\n');
+    const result = readProjectLogTail(dir, 'foo', 'storage/logs/laravel.log', 10);
+    assert.equal(result.kind, 'ok');
+    assert.deepEqual(result.lines, ['error in \\{42}']);
+});
+
+test('detectLaravelIssue returns none for empty or clean logs', () => {
+    assert.equal(detectLaravelIssue([]).kind, 'none');
+    assert.equal(detectLaravelIssue(null).kind, 'none');
+    assert.equal(detectLaravelIssue(['[2026-04-22 10:00:00] production.INFO: ok']).kind, 'none');
+});
+
+test('detectLaravelIssue flags stale compiled views as fixable', () => {
+    const line = '[2026-04-22 21:27:38] local.ERROR: Call to undefined function _1fb406fc1002f58fc1a05deff6ef0181() (View: resources/views/welcome.blade.php)';
+    const out = detectLaravelIssue([line]);
+    assert.equal(out.kind, 'stale_views');
+    assert.match(out.hint, /F/);
+});
+
+test('detectLaravelIssue prefers stale_views over generic error', () => {
+    const lines = [
+        '[2026-04-22 21:20:00] local.ERROR: Something else went wrong',
+        '[2026-04-22 21:27:38] local.ERROR: Call to undefined function _1fb406fc1002f58fc1a05deff6ef0181()',
+    ];
+    assert.equal(detectLaravelIssue(lines).kind, 'stale_views');
+});
+
+test('detectLaravelIssue flags generic local.ERROR as error', () => {
+    const lines = ['[2026-04-22 12:00:00] local.ERROR: NullPointerException'];
+    const out = detectLaravelIssue(lines);
+    assert.equal(out.kind, 'error');
+    assert.match(out.hint, /F/);
 });

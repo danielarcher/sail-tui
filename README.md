@@ -32,7 +32,7 @@ Requires Node.js (v18+). Dependencies are installed locally in `sail-tui/node_mo
 │                                  │  ● Tests        ✓ 248 · 1.4s     │
 │                                  │  [ Up ] [ Dev ] [ Stop ] [Restart]│
 ├──────────────────────────────────┤                                   │
-│  GIT                             │  VITE │ REVERB │ QUEUE │ TESTS    │
+│  GIT                             │  VITE │ REVERB │ QUEUE │ LARAVEL │ TESTS │
 │  ⎇ main ●                        │  ┌─ LOGS ───────────────────┐    │
 │  ⇡ origin/main ↑2                │  │ > dev                     │    │
 │  3✎  1?  1⚑                       │  │ > vite                    │    │
@@ -60,9 +60,12 @@ Requires Node.js (v18+). Dependencies are installed locally in `sail-tui/node_mo
 | `D` (Shift) | Dev all projects                    |
 | `S` (Shift) | Stop all projects                   |
 | `R` (Shift) | Restart all projects                |
+| `F` (Shift) | Fix Laravel — clear compiled views + `artisan optimize:clear` |
 | `o`         | Open selected project URL in the default browser |
-| `l`         | Cycle log tabs (Vite → Reverb → Queue → Tests) |
-| `G` / `End` | Jump to the end of the log and resume follow mode |
+| `l`         | Cycle log tabs (Vite → Reverb → Queue → Laravel → Tests) |
+| `←` / `→`   | Horizontal scroll through long log lines (no wrap)  |
+| `0`         | Reset horizontal scroll to column 0                 |
+| `G` / `End` | Jump to end of log, resume follow mode, reset horizontal scroll |
 | `?`         | Toggle the help / keybindings overlay |
 | `a`         | Toggle activity log overlay         |
 | `Escape`    | Close the activity overlay, or cancel the in-flight action |
@@ -83,7 +86,8 @@ sail-tui.js (Node.js + neo-blessed)
     │
     ├── Actions ───────────→ spawns: sail-all {up|down|dev|restart} [project]
     │
-    └── Log Tailing ───────→ reads: .sail-logs/{project}-{vite|reverb|queue}.log
+    └── Log Tailing ───────→ reads: .sail-logs/{project}-{vite|reverb|queue|tests}.log
+                             reads: {project}/storage/logs/laravel.log
 ```
 
 The TUI is a **wrapper** around `sail-all` — it does not reimplement container management, process lifecycle, or storage symlink fixes. All actions delegate to the existing script.
@@ -115,15 +119,31 @@ Only one action can run at a time — buttons are ignored while an action is in-
 
 ### Log Tailing
 
-The TUI reads log files from `.sail-logs/` every 2 seconds:
+The TUI reads log files every 2 seconds:
 
-- `{project}-vite.log` — Vite dev server output
-- `{project}-reverb.log` — Reverb WebSocket server output
-- `{project}-queue.log` — Queue worker output
+- `.sail-logs/{project}-vite.log` — Vite dev server output
+- `.sail-logs/{project}-reverb.log` — Reverb WebSocket server output
+- `.sail-logs/{project}-queue.log` — Queue worker output
+- `.sail-logs/{project}-tests.log` — most recent test run
+- `{project}/storage/logs/laravel.log` — Laravel application log (read from inside each project)
 
-These files are created by `sail-all dev`. The TUI reads the last 16KB of each file and displays the tail. ANSI escape codes are stripped; blessed markup characters (`{`, `}`) are escaped to prevent rendering glitches.
+Files under `.sail-logs/` are created by `sail-all dev` / the test runner. The Laravel log is written by the framework itself. The TUI reads the last 16KB of each and displays the tail. ANSI escape codes are stripped; blessed markup characters (`{`, `}`) are escaped to prevent rendering glitches.
 
-Log tabs are clickable or cycle with `l`. Tabs auto-hide for projects that don't use Reverb/Queue.
+Log tabs are clickable or cycle with `l`. Tabs auto-hide for projects that don't use Reverb/Queue; the Laravel tab is always visible.
+
+### Laravel issue detection & auto-fix
+
+The Laravel tab scans recent log lines for known-fixable problems and surfaces them without requiring you to open the tab:
+
+- **Stale compiled Blade views** — detected by the signature `Call to undefined function _{32-hex-digits}()`. The LARAVEL tab turns red, and opening it shows a `⚠ stale compiled views — press F to clear` banner.
+- **Other `local.ERROR` entries** — the tab turns orange and shows a softer hint.
+
+Press `Shift+F` (or click the **Fix Laravel** button in the second action row) to run the recovery sequence:
+
+1. Delete `storage/framework/views/*.php` **directly on the host**. This handles the case where the view cache is so wedged that `artisan` itself can't boot.
+2. Run `artisan optimize:clear` inside Sail to flush cache / config / route / view / event caches the official way.
+
+Step 2 needs the container up; if it's down, step 1 still unblocks the app once the container comes back (the TUI logs `views cleared, artisan failed` in that case).
 
 ### Color System
 
